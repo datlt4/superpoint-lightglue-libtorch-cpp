@@ -1,0 +1,4 @@
+weights/lightglue_scripted.pt filter=lfs diff=lfs merge=lfs -text
+weights/superpoint_lightglue_v0-1_arxiv.pth filter=lfs diff=lfs merge=lfs -text
+weights/superpoint_scripted.pt filter=lfs diff=lfs merge=lfs -text
+weights/superpoint_v1.pth filter=lfs diff=lfs merge=lfs -text
