@@ -7,18 +7,18 @@ import lightglue
 import torch
 import cv2
 from time import time
-import numpy as np
-import onnxruntime as ort
-import onnx
+# import numpy as np
+# import onnxruntime as ort
+# import onnx
 
 # pip3 install tensorrt
-import tensorrt as trt
-from PIL import Image
-import pycuda.driver as cuda
-import pycuda.autoinit  # Initializes the first available GPU and sets up device context
-print(trt.__version__)
+# import tensorrt as trt
+# from PIL import Image
+# import pycuda.driver as cuda
+# import pycuda.autoinit  # Initializes the first available GPU and sets up device context
+# print(trt.__version__)
 
-providers=["CUDAExecutionProvider", "CPUExecutionProvider"]
+# providers=["CUDAExecutionProvider", "CPUExecutionProvider"]
 
 torch.set_grad_enabled(False)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # 'mps', 'cpu'
@@ -97,3 +97,5 @@ scripted_extractor.save("weights/superpoint_scripted.pt")
 
 scripted_matcher = torch.jit.script(matcher_pytorch)
 scripted_matcher.save("weights/lightglue_scripted.pt")
+
+

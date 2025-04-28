@@ -2,7 +2,13 @@
 cmake_minimum_required(VERSION 3.0 FATAL_ERROR)
 project(torch-app)
 
+
 # Pytorch
+# Set the path for LibTorch
+set(TORCH_CMAKE_PREFIX_PATH "/usr/local/libtorch/")
+# Add -DCMAKE_PREFIX_PATH when calling find_package or configuring
+set(CMAKE_PREFIX_PATH ${TORCH_CMAKE_PREFIX_PATH})
+
 find_package(Torch REQUIRED)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS}")
 set(LIB ${LIB} "${TORCH_LIBRARIES}")
@@ -42,5 +48,5 @@ if (MSVC)
                         $<TARGET_FILE_DIR:torch-app>)
 endif (MSVC)
 
-# export LIB_TORCH=/usr/local/lib/python3.11/dist-packages/torch/share/cmake/Torch/
+# export LIB_TORCH=/usr/local/libtorch/
 # cmake -DCMAKE_PREFIX_PATH=$LIB_TORCH ..

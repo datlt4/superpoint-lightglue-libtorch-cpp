@@ -41,13 +41,14 @@ torch::Tensor FeatureMatching::numpy_image_to_torch(const cv::Mat &image)
     return tensor_image;
 }
 
-cv::Mat FeatureMatching::read_image(const std::string &path)
+cv::Mat FeatureMatching::read_image(const std::string &path, bool grayscale)
 {
-    cv::Mat image = cv::imread(path, cv::IMREAD_GRAYSCALE);
-    if (image.empty())
+    if (grayscale)
     {
-        throw std::runtime_error("Could not read image at " + path);
+        return cv::imread(path, cv::IMREAD_GRAYSCALE);
     }
-
-    return image;
+    else
+    {
+        return cv::imread(path, cv::IMREAD_UNCHANGED);
+    }
 }

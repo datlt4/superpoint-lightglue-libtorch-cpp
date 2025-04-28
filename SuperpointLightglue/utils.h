@@ -15,7 +15,8 @@ namespace FeatureMatching
         float scale_w = 1;
     } scale_t;
 
-    struct SuperPointFeature {
+    struct SuperPointFeature
+    {
         torch::Tensor keypoints;
         torch::Tensor scores;
         torch::Tensor descriptors;
@@ -23,12 +24,14 @@ namespace FeatureMatching
         unsigned int size;
     };
 
-    struct Matches {
+    struct Matches
+    {
         std::vector<cv::DMatch> matches;
         std::vector<cv::KeyPoint> keypoints0;
         std::vector<cv::KeyPoint> keypoints1;
 
-        Matches() {
+        Matches()
+        {
             matches.reserve(512);
             keypoints0.reserve(512);
             keypoints1.reserve(512);
@@ -40,7 +43,7 @@ namespace FeatureMatching
 
     torch::Tensor numpy_image_to_torch(const cv::Mat &image);
 
-    cv::Mat read_image(const std::string &path);
+    cv::Mat read_image(const std::string &path, bool grayscale = false);
 }
 
 #endif // __FEATURE_MATCHING_UTILS_H__
