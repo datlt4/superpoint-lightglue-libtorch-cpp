@@ -21,7 +21,14 @@ namespace FeatureMatching
         torch::Tensor scores;
         torch::Tensor descriptors;
         scale_t scale;
-        unsigned int size;
+        cv::Size size;
+
+        // Convert to PyTorch tensor
+        torch::Tensor size_to_tensor() const
+        {
+            std::vector<int> data = {size.width, size.height};
+            return torch::from_blob(data.data(), {2}, torch::kFloat32);
+        }
     };
 
     struct Matches

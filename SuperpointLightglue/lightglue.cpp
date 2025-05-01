@@ -34,14 +34,12 @@ void LightGlue::preprocess(SuperPointFeature &feature0, SuperPointFeature &featu
     feature1.descriptors = feature1.descriptors.to(this->device);
 
     // Keypoint normalization
-    float kn0 = static_cast<float>(feature0.size) / 2.0f;
-    float kn1 = static_cast<float>(feature1.size) / 2.0f;
+    float knsc = 256.0f;
+    torch::Tensor knsh0 = feature0.size_to_tensor().to(this->device) / 2.0;
+    torch::Tensor knsh1 = feature1.size_to_tensor().to(this->device) / 2.0;
 
-    torch::Tensor divisor0 = torch::full_like(feature0.keypoints, kn0);
-    torch::Tensor divisor1 = torch::full_like(feature1.keypoints, kn1);
-
-    feature0.keypoints = (feature0.keypoints - divisor0) / divisor0;
-    feature1.keypoints = (feature1.keypoints - divisor1) / divisor1;
+    feature0.keypoints = (feature0.keypoints - knsh0) / knsc;
+    feature1.keypoints = (feature1.keypoints - knsh1) / knsc;
 }
 
 void LightGlue::predict(SuperPointFeature& feature0, SuperPointFeature& feature1, Matches &matches)

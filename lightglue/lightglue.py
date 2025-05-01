@@ -8,11 +8,11 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-try:
-    # from flash_attn.module.mha import FlashCrossAttention
-    from flash_attn.modules.mha import FlashCrossAttention
-except ModuleNotFoundError:
-    FlashCrossAttention = None
+# try:
+#     # from flash_attn.module.mha import FlashCrossAttention
+#     from flash_attn.modules.mha import FlashCrossAttention
+# except ModuleNotFoundError:
+FlashCrossAttention = None
 
 if FlashCrossAttention or hasattr(F, "scaled_dot_product_attention"):
     FLASH_AVAILABLE = True
@@ -71,7 +71,6 @@ class LearnableFourierPositionalEncoding(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         projected = self.Wr(x)  # (N, D/2)
-
         cosines = torch.cos(projected)
         sines = torch.sin(projected)
         emb = torch.stack([cosines, sines], 0).unsqueeze(-3)
@@ -112,7 +111,6 @@ class Attention(nn.Module):
         q = q.contiguous()
         k = k.contiguous()
         v = v.contiguous()
-        
         v = F.scaled_dot_product_attention(q, k, v, attn_mask=mask)
         return v if mask is None else v.nan_to_num()
 
@@ -224,26 +222,11 @@ class TransformerLayer(nn.Module):
         desc0,
         desc1,
         encoding0,
-        encoding1,
-        mask0: Optional[torch.Tensor] = None,
-        mask1: Optional[torch.Tensor] = None,
+        encoding1
     ):
-        if mask0 is not None and mask1 is not None:
-            return self.masked_forward(desc0, desc1, encoding0, encoding1, mask0, mask1)
-        else:
-            desc0 = self.self_attn(desc0, encoding0)
-            desc1 = self.self_attn(desc1, encoding1)
-            return self.cross_attn(desc0, desc1)
-
-    # This part is compiled and allows padding inputs
-    def masked_forward(self, desc0, desc1, encoding0, encoding1, mask0, mask1):
-        mask = mask0 & mask1.transpose(-1, -2)
-        mask0 = mask0 & mask0.transpose(-1, -2)
-        mask1 = mask1 & mask1.transpose(-1, -2)
-        desc0 = self.self_attn(desc0, encoding0, mask0)
-        desc1 = self.self_attn(desc1, encoding1, mask1)
-        return self.cross_attn(desc0, desc1, mask)
-
+        desc0 = self.self_attn(desc0, encoding0)
+        desc1 = self.self_attn(desc1, encoding1)
+        return self.cross_attn(desc0, desc1)
 
 def sigmoid_log_double_softmax(
     sim: torch.Tensor, z0: torch.Tensor, z1: torch.Tensor
@@ -291,7 +274,7 @@ def filter_matches(scores: torch.Tensor, th: float):
     mutual0 = indices0 == m1.gather(1, m0)
     mutual1 = indices1 == m0.gather(1, m1)
     max0_exp = max0.values.exp()
-    zero = torch.zeros_like(max0_exp)
+    zero = torch.tensor(0., dtype=torch.float32, device=scores.device)
     mscores0 = torch.where(mutual0, max0_exp, zero)
     mscores1 = torch.where(mutual1, mscores0.gather(1, m1), zero)
     valid0 = mutual0 & (mscores0 > th)
@@ -358,64 +341,15 @@ class LightGlue(nn.Module):
         # static lengths LightGlue is compiled for (only used with torch.compile)
         self.static_lengths = None
 
-    @torch.jit.unused
-    def transformer_loop(
-                self,
-                desc0, desc1, encoding0, encoding1,
-                mask0, mask1, m:int, n:int,
-                pruning_th:int, do_early_stop:bool,
-                ind0, ind1, prune0, prune1):
-
-        token0, token1 = None, None
-        i = 0
-        # for i, transformer in enumerate(self.transformers):
-        num_layers = len(self.transformers)
-        for i in range(num_layers):
-            transformer = self.transformers[i]
-            if desc0.shape[1] == 0 or desc1.shape[1] == 0:
-                return i, desc0, desc1, token0, token1, i, ind0, ind1, prune0, prune1
-
-            desc0, desc1 = transformer(desc0, desc1, encoding0, encoding1, mask0=mask0, mask1=mask1)
-
-            if i != 8:
-                if do_early_stop:
-                    token0, token1 = self.token_confidence[i](desc0, desc1)
-                    if self.check_if_stop(token0[..., :m], token1[..., :n], i, m + n):
-                        return i, desc0, desc1, token0, token1, i, ind0, ind1, prune0, prune1
-
-                if desc0.shape[-2] > pruning_th:
-                    scores0 = self.log_assignment[i].get_matchability(desc0)
-                    prunemask0 = self.get_pruning_mask(token0, scores0, i)
-                    keep0 = torch.where(prunemask0)[1]
-                    ind0 = ind0.index_select(1, keep0)
-                    desc0 = desc0.index_select(1, keep0)
-                    encoding0 = encoding0.index_select(-2, keep0)
-                    prune0[:, ind0] += 1
-
-                if desc1.shape[-2] > pruning_th:
-                    scores1 = self.log_assignment[i].get_matchability(desc1)
-                    prunemask1 = self.get_pruning_mask(token1, scores1, i)
-                    keep1 = torch.where(prunemask1)[1]
-                    ind1 = ind1.index_select(1, keep1)
-                    desc1 = desc1.index_select(1, keep1)
-                    encoding1 = encoding1.index_select(-2, keep1)
-                    prune1[:, ind1] += 1
-
-        return i, desc0, desc1, token0, token1, len(self.transformers) - 1, ind0, ind1, prune0, prune1
-
-
     def forward(self, kpts0, desc0, kpts1, desc1):
-        # with torch.autocast(enabled=False, device_type="cuda"):
         b, m, _ = kpts0.shape
         b, n, _ = kpts1.shape
         device = kpts0.device
 
-        mask0 = torch.ones((b, m), dtype=torch.bool, device=device)
-        mask1 = torch.ones((b, n), dtype=torch.bool, device=device)
         c = max(m, n)
-
         desc0 = self.input_proj(desc0)
         desc1 = self.input_proj(desc1)
+
         # cache positional embeddings
         encoding0 = self.posenc(kpts0)
         encoding1 = self.posenc(kpts1)
@@ -430,396 +364,94 @@ class LightGlue(nn.Module):
         prune0 = torch.ones_like(ind0)
         prune1 = torch.ones_like(ind1)
 
-        # result = self.transformer_loop(desc0, desc1, encoding0, encoding1, mask0, mask1, m, n, pruning_th, do_early_stop, ind0, ind1, prune0, prune1)
         """
         BEGIN transform_loop
         """
         token0 = torch.zeros(1, 512)
         token1 = torch.zeros(1, 512)
         i = 0
-        last_i = 0
         
-        # transformer = self.transformers[0]
+        # transformer [0]
         if desc0.shape[1] == 0 or desc1.shape[1] == 0:
             i = 0
-            desc0 = desc0
-            desc1 = desc1
-            token0 = token0
-            token1 = token1
-            last_i = 0
-            ind0 = ind0
-            ind1 = ind1
-            prune0 = prune0
-            prune1 = prune1
         else:
-            desc0, desc1 = self.transformers[0](desc0, desc1, encoding0, encoding1, mask0=mask0, mask1=mask1)
+            desc0, desc1 = self.transformers[0](desc0, desc1, encoding0, encoding1)
             token0, token1 = self.token_confidence[0](desc0, desc1)
             if self.check_if_stop(token0[..., :m], token1[..., :n], i, m + n):
                 i = 0
-                desc0 = desc0
-                desc1 = desc1
-                token0 = token0
-                token1 = token1
-                last_i = 0
-                ind0 = ind0
-                ind1 = ind1
-                prune0 = prune0
-                prune1 = prune1
             else:
-                if desc0.shape[-2] > pruning_th:
-                    scores0 = self.log_assignment[0].get_matchability(desc0)
-                    prunemask0 = self.get_pruning_mask(token0, scores0, 0)
-                    keep0 = torch.where(prunemask0)[1]
-                    ind0 = ind0.index_select(1, keep0)
-                    desc0 = desc0.index_select(1, keep0)
-                    encoding0 = encoding0.index_select(-2, keep0)
-                    prune0[:, ind0] += 1
-                if desc1.shape[-2] > pruning_th:
-                    scores1 = self.log_assignment[0].get_matchability(desc1)
-                    prunemask1 = self.get_pruning_mask(token1, scores1, 0)
-                    keep1 = torch.where(prunemask1)[1]
-                    ind1 = ind1.index_select(1, keep1)
-                    desc1 = desc1.index_select(1, keep1)
-                    encoding1 = encoding1.index_select(-2, keep1)
-                    prune1[:, ind1] += 1
-
-                # transformer = self.transformers[1]
+                # transformer [1]
                 if desc0.shape[1] == 0 or desc1.shape[1] == 0:
                     i = 1
-                    desc0 = desc0
-                    desc1 = desc1
-                    token0 = token0
-                    token1 = token1
-                    last_i = 1
-                    ind0 = ind0
-                    ind1 = ind1
-                    prune0 = prune0
-                    prune1 = prune1
                 else:
-                    desc0, desc1 = self.transformers[1](desc0, desc1, encoding0, encoding1, mask0=mask0, mask1=mask1)
+                    desc0, desc1 = self.transformers[1](desc0, desc1, encoding0, encoding1)
                     token0, token1 = self.token_confidence[1](desc0, desc1)
                     if self.check_if_stop(token0[..., :m], token1[..., :n], i, m + n):
                         i = 1
-                        desc0 = desc0
-                        desc1 = desc1
-                        token0 = token0
-                        token1 = token1
-                        last_i = 1
-                        ind0 = ind0
-                        ind1 = ind1
-                        prune0 = prune0
-                        prune1 = prune1
                     else:
-                        if desc0.shape[-2] > pruning_th:
-                            scores0 = self.log_assignment[1].get_matchability(desc0)
-                            prunemask0 = self.get_pruning_mask(token0, scores0, 1)
-                            keep0 = torch.where(prunemask0)[1]
-                            ind0 = ind0.index_select(1, keep0)
-                            desc0 = desc0.index_select(1, keep0)
-                            encoding0 = encoding0.index_select(-2, keep0)
-                            prune0[:, ind0] += 1
-                        if desc1.shape[-2] > pruning_th:
-                            scores1 = self.log_assignment[1].get_matchability(desc1)
-                            prunemask1 = self.get_pruning_mask(token1, scores1, 1)
-                            keep1 = torch.where(prunemask1)[1]
-                            ind1 = ind1.index_select(1, keep1)
-                            desc1 = desc1.index_select(1, keep1)
-                            encoding1 = encoding1.index_select(-2, keep1)
-                            prune1[:, ind1] += 1
-
-                        # transformer = self.transformers[2]
+                        # transformer [2]
                         if desc0.shape[1] == 0 or desc1.shape[1] == 0:
                             i = 2
-                            desc0 = desc0
-                            desc1 = desc1
-                            token0 = token0
-                            token1 = token1
-                            last_i = 2
-                            ind0 = ind0
-                            ind1 = ind1
-                            prune0 = prune0
-                            prune1 = prune1
                         else:
-                            desc0, desc1 = self.transformers[2](desc0, desc1, encoding0, encoding1, mask0=mask0, mask1=mask1)
+                            desc0, desc1 = self.transformers[2](desc0, desc1, encoding0, encoding1)
                             token0, token1 = self.token_confidence[2](desc0, desc1)
                             if self.check_if_stop(token0[..., :m], token1[..., :n], i, m + n):
                                 i = 2
-                                desc0 = desc0
-                                desc1 = desc1
-                                token0 = token0
-                                token1 = token1
-                                last_i = 2
-                                ind0 = ind0
-                                ind1 = ind1
-                                prune0 = prune0
-                                prune1 = prune1
                             else:
-                                if desc0.shape[-2] > pruning_th:
-                                    scores0 = self.log_assignment[2].get_matchability(desc0)
-                                    prunemask0 = self.get_pruning_mask(token0, scores0, 2)
-                                    keep0 = torch.where(prunemask0)[2]
-                                    ind0 = ind0.index_select(1, keep0)
-                                    desc0 = desc0.index_select(1, keep0)
-                                    encoding0 = encoding0.index_select(-2, keep0)
-                                    prune0[:, ind0] += 1
-                                if desc1.shape[-2] > pruning_th:
-                                    scores1 = self.log_assignment[2].get_matchability(desc1)
-                                    prunemask1 = self.get_pruning_mask(token1, scores1, 2)
-                                    keep1 = torch.where(prunemask1)[1]
-                                    ind1 = ind1.index_select(1, keep1)
-                                    desc1 = desc1.index_select(1, keep1)
-                                    encoding1 = encoding1.index_select(-2, keep1)
-                                    prune1[:, ind1] += 1
-                                        
-                                # transformer = self.transformers[3]
+                                # transformer [3]
                                 if desc0.shape[1] == 0 or desc1.shape[1] == 0:
                                     i = 3
-                                    desc0 = desc0
-                                    desc1 = desc1
-                                    token0 = token0
-                                    token1 = token1
-                                    last_i = 3
-                                    ind0 = ind0
-                                    ind1 = ind1
-                                    prune0 = prune0
-                                    prune1 = prune1
                                 else:
-                                    desc0, desc1 = self.transformers[3](desc0, desc1, encoding0, encoding1, mask0=mask0, mask1=mask1)
+                                    desc0, desc1 = self.transformers[3](desc0, desc1, encoding0, encoding1)
                                     token0, token1 = self.token_confidence[3](desc0, desc1)
                                     if self.check_if_stop(token0[..., :m], token1[..., :n], i, m + n):
                                         i = 3
-                                        desc0 = desc0
-                                        desc1 = desc1
-                                        token0 = token0
-                                        token1 = token1
-                                        last_i = 3
-                                        ind0 = ind0
-                                        ind1 = ind1
-                                        prune0 = prune0
-                                        prune1 = prune1
                                     else:
-                                        if desc0.shape[-2] > pruning_th:
-                                            scores0 = self.log_assignment[3].get_matchability(desc0)
-                                            prunemask0 = self.get_pruning_mask(token0, scores0, 3)
-                                            keep0 = torch.where(prunemask0)[1]
-                                            ind0 = ind0.index_select(1, keep0)
-                                            desc0 = desc0.index_select(1, keep0)
-                                            encoding0 = encoding0.index_select(-2, keep0)
-                                            prune0[:, ind0] += 1
-                                        if desc1.shape[-2] > pruning_th:
-                                            scores1 = self.log_assignment[3].get_matchability(desc1)
-                                            prunemask1 = self.get_pruning_mask(token1, scores1, 3)
-                                            keep1 = torch.where(prunemask1)[1]
-                                            ind1 = ind1.index_select(1, keep1)
-                                            desc1 = desc1.index_select(1, keep1)
-                                            encoding1 = encoding1.index_select(-2, keep1)
-                                            prune1[:, ind1] += 1
-
-                                        # transformer = self.transformers[4]
+                                        # transformer [4]
                                         if desc0.shape[1] == 0 or desc1.shape[1] == 0:
                                             i = 4
-                                            desc0 = desc0
-                                            desc1 = desc1
-                                            token0 = token0
-                                            token1 = token1
-                                            last_i = 4
-                                            ind0 = ind0
-                                            ind1 = ind1
-                                            prune0 = prune0
-                                            prune1 = prune1
                                         else:
-                                            desc0, desc1 = self.transformers[4](desc0, desc1, encoding0, encoding1, mask0=mask0, mask1=mask1)
+                                            desc0, desc1 = self.transformers[4](desc0, desc1, encoding0, encoding1)
                                             token0, token1 = self.token_confidence[4](desc0, desc1)
                                             if self.check_if_stop(token0[..., :m], token1[..., :n], i, m + n):
                                                 i = 4
-                                                desc0 = desc0
-                                                desc1 = desc1
-                                                token0 = token0
-                                                token1 = token1
-                                                last_i = 4
-                                                ind0 = ind0
-                                                ind1 = ind1
-                                                prune0 = prune0
-                                                prune1 = prune1
                                             else:
-                                                if desc0.shape[-2] > pruning_th:
-                                                    scores0 = self.log_assignment[4].get_matchability(desc0)
-                                                    prunemask0 = self.get_pruning_mask(token0, scores0, 4)
-                                                    keep0 = torch.where(prunemask0)[1]
-                                                    ind0 = ind0.index_select(1, keep0)
-                                                    desc0 = desc0.index_select(1, keep0)
-                                                    encoding0 = encoding0.index_select(-2, keep0)
-                                                    prune0[:, ind0] += 1
-                                                if desc1.shape[-2] > pruning_th:
-                                                    scores1 = self.log_assignment[4].get_matchability(desc1)
-                                                    prunemask1 = self.get_pruning_mask(token1, scores1, 4)
-                                                    keep1 = torch.where(prunemask1)[1]
-                                                    ind1 = ind1.index_select(1, keep1)
-                                                    desc1 = desc1.index_select(1, keep1)
-                                                    encoding1 = encoding1.index_select(-2, keep1)
-                                                    prune1[:, ind1] += 1
-                                                    
-                                                # transformer = self.transformers[5]
+                                                # transformer [5]
                                                 if desc0.shape[1] == 0 or desc1.shape[1] == 0:
                                                     i = 5
-                                                    desc0 = desc0
-                                                    desc1 = desc1
-                                                    token0 = token0
-                                                    token1 = token1
-                                                    last_i = 5
-                                                    ind0 = ind0
-                                                    ind1 = ind1
-                                                    prune0 = prune0
-                                                    prune1 = prune1
                                                 else:
-                                                    desc0, desc1 = self.transformers[5](desc0, desc1, encoding0, encoding1, mask0=mask0, mask1=mask1)
+                                                    desc0, desc1 = self.transformers[5](desc0, desc1, encoding0, encoding1)
                                                     token0, token1 = self.token_confidence[5](desc0, desc1)
                                                     if self.check_if_stop(token0[..., :m], token1[..., :n], i, m + n):
                                                         i = 5
-                                                        desc0 = desc0
-                                                        desc1 = desc1
-                                                        token0 = token0
-                                                        token1 = token1
-                                                        last_i = 5
-                                                        ind0 = ind0
-                                                        ind1 = ind1
-                                                        prune0 = prune0
-                                                        prune1 = prune1
                                                     else:
-                                                        if desc0.shape[-2] > pruning_th:
-                                                            scores0 = self.log_assignment[5].get_matchability(desc0)
-                                                            prunemask0 = self.get_pruning_mask(token0, scores0, 5)
-                                                            keep0 = torch.where(prunemask0)[1]
-                                                            ind0 = ind0.index_select(1, keep0)
-                                                            desc0 = desc0.index_select(1, keep0)
-                                                            encoding0 = encoding0.index_select(-2, keep0)
-                                                            prune0[:, ind0] += 1
-                                                        if desc1.shape[-2] > pruning_th:
-                                                            scores1 = self.log_assignment[5].get_matchability(desc1)
-                                                            prunemask1 = self.get_pruning_mask(token1, scores1, 5)
-                                                            keep1 = torch.where(prunemask1)[1]
-                                                            ind1 = ind1.index_select(1, keep1)
-                                                            desc1 = desc1.index_select(1, keep1)
-                                                            encoding1 = encoding1.index_select(-2, keep1)
-                                                            prune1[:, ind1] += 1
-
-                                                        # transformer = self.transformers[6]
+                                                        # transformer [6]
                                                         if desc0.shape[1] == 0 or desc1.shape[1] == 0:
                                                             i = 6
-                                                            desc0 = desc0
-                                                            desc1 = desc1
-                                                            token0 = token0
-                                                            token1 = token1
-                                                            last_i = 6
-                                                            ind0 = ind0
-                                                            ind1 = ind1
-                                                            prune0 = prune0
-                                                            prune1 = prune1
                                                         else:
-                                                            desc0, desc1 = self.transformers[6](desc0, desc1, encoding0, encoding1, mask0=mask0, mask1=mask1)
+                                                            desc0, desc1 = self.transformers[6](desc0, desc1, encoding0, encoding1)
                                                             token0, token1 = self.token_confidence[6](desc0, desc1)
                                                             if self.check_if_stop(token0[..., :m], token1[..., :n], i, m + n):
                                                                 i = 6
-                                                                desc0 = desc0
-                                                                desc1 = desc1
-                                                                token0 = token0
-                                                                token1 = token1
-                                                                last_i = 6
-                                                                ind0 = ind0
-                                                                ind1 = ind1
-                                                                prune0 = prune0
-                                                                prune1 = prune1
                                                             else:
-                                                                if desc0.shape[-2] > pruning_th:
-                                                                    scores0 = self.log_assignment[6].get_matchability(desc0)
-                                                                    prunemask0 = self.get_pruning_mask(token0, scores0, 6)
-                                                                    keep0 = torch.where(prunemask0)[1]
-                                                                    ind0 = ind0.index_select(1, keep0)
-                                                                    desc0 = desc0.index_select(1, keep0)
-                                                                    encoding0 = encoding0.index_select(-2, keep0)
-                                                                    prune0[:, ind0] += 1
-                                                                if desc1.shape[-2] > pruning_th:
-                                                                    scores1 = self.log_assignment[6].get_matchability(desc1)
-                                                                    prunemask1 = self.get_pruning_mask(token1, scores1, 6)
-                                                                    keep1 = torch.where(prunemask1)[1]
-                                                                    ind1 = ind1.index_select(1, keep1)
-                                                                    desc1 = desc1.index_select(1, keep1)
-                                                                    encoding1 = encoding1.index_select(-2, keep1)
-                                                                    prune1[:, ind1] += 1
-
-                                                                # transformer = self.transformers[7]
+                                                                # transformer [7]
                                                                 if desc0.shape[1] == 0 or desc1.shape[1] == 0:
                                                                     i = 7
-                                                                    desc0 = desc0
-                                                                    desc1 = desc1
-                                                                    token0 = token0
-                                                                    token1 = token1
-                                                                    last_i = 7
-                                                                    ind0 = ind0
-                                                                    ind1 = ind1
-                                                                    prune0 = prune0
-                                                                    prune1 = prune1
                                                                 else:
-                                                                    desc0, desc1 = self.transformers[7](desc0, desc1, encoding0, encoding1, mask0=mask0, mask1=mask1)
+                                                                    desc0, desc1 = self.transformers[7](desc0, desc1, encoding0, encoding1)
                                                                     token0, token1 = self.token_confidence[7](desc0, desc1)
                                                                     if self.check_if_stop(token0[..., :m], token1[..., :n], i, m + n):
                                                                         i = 7
-                                                                        desc0 = desc0
-                                                                        desc1 = desc1
-                                                                        token0 = token0
-                                                                        token1 = token1
-                                                                        last_i = 7
-                                                                        ind0 = ind0
-                                                                        ind1 = ind1
-                                                                        prune0 = prune0
-                                                                        prune1 = prune1
                                                                     else:
-                                                                        if desc0.shape[-2] > pruning_th:
-                                                                            scores0 = self.log_assignment[7].get_matchability(desc0)
-                                                                            prunemask0 = self.get_pruning_mask(token0, scores0, 7)
-                                                                            keep0 = torch.where(prunemask0)[1]
-                                                                            ind0 = ind0.index_select(1, keep0)
-                                                                            desc0 = desc0.index_select(1, keep0)
-                                                                            encoding0 = encoding0.index_select(-2, keep0)
-                                                                            prune0[:, ind0] += 1
-                                                                        if desc1.shape[-2] > pruning_th:
-                                                                            scores1 = self.log_assignment[7].get_matchability(desc1)
-                                                                            prunemask1 = self.get_pruning_mask(token1, scores1, 7)
-                                                                            keep1 = torch.where(prunemask1)[1]
-                                                                            ind1 = ind1.index_select(1, keep1)
-                                                                            desc1 = desc1.index_select(1, keep1)
-                                                                            encoding1 = encoding1.index_select(-2, keep1)
-                                                                            prune1[:, ind1] += 1
-
-                                                                        # transformer = self.transformers[8]
+                                                                        # transformer [8]
                                                                         if desc0.shape[1] == 0 or desc1.shape[1] == 0:
                                                                             i = 8
-                                                                            desc0 = desc0
-                                                                            desc1 = desc1
-                                                                            token0 = token0
-                                                                            token1 = token1
-                                                                            last_i = 8
-                                                                            ind0 = ind0
-                                                                            ind1 = ind1
-                                                                            prune0 = prune0
-                                                                            prune1 = prune1
                                                                         else:
-                                                                            desc0, desc1 = self.transformers[8](desc0, desc1, encoding0, encoding1, mask0=mask0, mask1=mask1)
+                                                                            desc0, desc1 = self.transformers[8](desc0, desc1, encoding0, encoding1)
 
         """
         END transform_loop
         """
-        # i = result[0]
-        # desc0 = result[1]
-        # desc1 = result[2]
-        # token0 = result[3]
-        # token1 = result[4]
-        # last_i = result[5]
-        # ind0 = result[6]
-        # ind1 = result[7]
-        # prune0 = result[8]
-        # prune1 = result[9]
-
         if desc0.shape[1] == 0 or desc1.shape[1] == 0:  # no keypoints
             m0 = desc0.new_full((b, m), -1, dtype=torch.long)
             m1 = desc1.new_full((b, n), -1, dtype=torch.long)
@@ -830,7 +462,6 @@ class LightGlue(nn.Module):
             return empty_matches, empty_scores
 
         desc0, desc1 = desc0[..., :m, :], desc1[..., :n, :]  # remove padding
-        # scores, _ = self.log_assignment[i](desc0, desc1)
         if i == 0:
             scores, _ = self.log_assignment[0](desc0, desc1)
         elif i == 1:
@@ -849,7 +480,7 @@ class LightGlue(nn.Module):
             scores, _ = self.log_assignment[7](desc0, desc1)
         else:
             scores, _ = self.log_assignment[8](desc0, desc1)
-
+    
         match_filtered = filter_matches(scores, 0.1)
         m0 = match_filtered[0]
         m1 = match_filtered[1]
@@ -864,17 +495,6 @@ class LightGlue(nn.Module):
         m_indices_1 = ind1[0, m_indices_1]
         matches = torch.stack([m_indices_0, m_indices_1], -1)
         mscores = mscores0[0][valid]
-
-        # # TODO: Remove when hloc switches to the compact format.
-        # m0_ = torch.full((b, m), -1, device=m0.device, dtype=m0.dtype)
-        # m1_ = torch.full((b, n), -1, device=m1.device, dtype=m1.dtype)
-        # m0_[:, ind0] = torch.where(m0 == -1, -1, ind1.gather(1, m0.clamp(min=0)))
-        # m1_[:, ind1] = torch.where(m1 == -1, -1, ind0.gather(1, m1.clamp(min=0)))
-        # mscores0_ = torch.zeros((b, m), device=mscores0.device)
-        # mscores1_ = torch.zeros((b, n), device=mscores1.device)
-        # mscores0_[:, ind0] = mscores0
-        # mscores1_[:, ind1] = mscores1
-        # m0, m1, mscores0, mscores1 = m0_, m1_, mscores0_, mscores1_
 
         return matches, mscores
 

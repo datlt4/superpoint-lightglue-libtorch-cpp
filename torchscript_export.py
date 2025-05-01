@@ -25,9 +25,9 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # 'mps', 
 print(device)
 
 # %%
-image0_path = "assets/image0.png"
+image0_path = "assets/ho_guom1.png"
 size0 = 512
-image1_path = "assets/image1.png"
+image1_path = "assets/ho_guom4.png"
 size1 = 512
 
 # %%
@@ -63,7 +63,6 @@ def pytorch_infer(image0_path: str, image1_path: str, resize0: int = 512, resize
     kn0 = resize0 / 2.0 # keypoint normalize
     kn1 = resize1 / 2.0 # keypoint normalize
     matches01, mscore01 = matcher_pytorch(((keypoints0 - kn0) / kn0), descriptors0, ((keypoints1 - kn1) / kn1), descriptors1)
-    print(type(matches01), type(mscore01))
 
     # Draw matches on the images and save the result image
     cv_kpts0 = convert_to_cv_keypoints(keypoints0[0], scale0)
@@ -71,7 +70,6 @@ def pytorch_infer(image0_path: str, image1_path: str, resize0: int = 512, resize
     cv_matches = convert_to_cv_matches(matches01)
     match_image = cv2.drawMatches(cv2.imread(image0_path), cv_kpts0, cv2.imread(image1_path), cv_kpts1, cv_matches, None)
     end = time()
-    print(f"Image0: {image0.shape}, Image1: {image1.shape}, Kpt0: {len(cv_kpts0)}, Kpt1: {len(cv_kpts1)}, Matches: {len(cv_matches)}, Inference time: {end - start:.2f} seconds")
 
     cv2.putText(img=match_image, text=f'Number of matches: {len(cv_matches)}', 
                 org=(10, 30), 
@@ -97,5 +95,3 @@ scripted_extractor.save("weights/superpoint_scripted.pt")
 
 scripted_matcher = torch.jit.script(matcher_pytorch)
 scripted_matcher.save("weights/lightglue_scripted.pt")
-
-

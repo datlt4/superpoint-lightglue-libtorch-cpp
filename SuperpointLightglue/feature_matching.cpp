@@ -43,7 +43,8 @@ void FeatureMatcher::extract_features(const cv::Mat &image, unsigned int size, S
     scale_t scale = processed_input.second;
     superpoint.predict(input_tensor, features);
     features.scale = scale;
-    features.size = size;
+    auto sizes = input_tensor.sizes();
+    features.size = cv::Size(sizes[3], sizes[2]);
 }
 
 void FeatureMatcher::extract_features(const std::string &image_path, unsigned int size, SuperPointFeature &features)
@@ -75,6 +76,7 @@ void FeatureMatcher::match(const cv::Mat &image0, unsigned int size0, const cv::
     {
         cv::Mat image_matches;
         cv::drawMatches(image0, matches.keypoints0, image1, matches.keypoints1, matches.matches, image_matches);
+        cv::putText(image_matches, "Number of matches: " + std::to_string(matches.matches.size()), cv::Point(10, 30), cv::FONT_HERSHEY_SIMPLEX, 1.0, cv::Scalar(255, 255, 255), 3, cv::LINE_AA);
         cv::imwrite("Matches.jpg", image_matches);
     }
     else
